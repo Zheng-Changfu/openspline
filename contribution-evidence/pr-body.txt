@@ -1,0 +1,30 @@
+# Preserve resource cleanup and worker ownership release when session shutdown raises
+
+Session removal currently pops the session before closing its resources. If close raises, the worker can remain owned by a session that is no longer in the session dictionary. The same exception can terminate the background reaper, while sequential media cleanup can leave later resources unclosed.
+
+This change makes the cleanup ownership chain explicit:
+
+- `remove()` attempts session close, worker release, and directory cleanup through nested `finally` blocks.
+- `WorkerPool.release()` clears the matching owner in `finally`, retaining the existing reset/restart behavior and existing `WorkerFailure` handling.
+- `Session.close()` and `LiveKitSink.close()` use `AsyncExitStack` so a failed cleanup does not skip later owned resources. Consumer cancellation/awaiting remains before media teardown, and the existing resource-close order is preserved.
+- The reaper catches and logs one removal failure at its task boundary, then continues. HTTP removals continue to propagate failures.
+- Lifespan cleanup removes sessions sequentially through `AsyncExitStack`, then closes the worker pool. This intentionally replaces concurrent shutdown removal: the pool must not close while another session is still resetting or releasing a worker.
+
+`AsyncExitStack` attempts every registered exit and propagates cleanup failures with normal exception chaining. The existing gathering of cancelled native media tasks still uses `return_exceptions=True`; that behavior is unchanged.
+
+## Scope
+
+Base: `1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9` (upstream HEAD rechecked on 2026-10-30).
+
+Four files, 51 insertions and 43 deletions. No new lock, timeout, retry loop, dependency, SDK-private access, or wire contract. This does not change attach/close serialization, lease expiry, preparation rollback, or playback-completion semantics. It does not claim resilience to repeated cancellation or successful recovery of an unavailable GPU.
+
+## Validation
+
+- All four proposed Python files compile.
+- `git apply --check` passes against the exact base.
+- Two independent source reviews found no remaining blocking ownership/order issue. Review identified and removed an earlier unsafe `gather`-plus-`finally pool.close()` approach; all removals now finish before pool shutdown.
+- A standalone integration/fault probe ran four isolated cases: exact base versus proposal, each through HTTP DELETE and idle expiry. It used real FastAPI/Uvicorn HTTP and worker subprocesses with the official `backend="test"` engine. Suspending a worker and closing the real parent IPC connection caused reset to raise `OSError("handle is closed")`; no cleanup method was mocked.
+- Both DELETE cases returned 500. On the base, owner/directory remained and the next create returned 429. With the proposal, owner/directory were removed, existing reaper recovery restored readiness, and a new session created/deleted with 201/204.
+- On idle expiry, the base reaper exited with OSError and the next create returned 429. The proposal kept the reaper alive, restored readiness, and a new session created with 201 then expired with status 404. All four probe runs cleaned their subprocesses and temporary directories.
+- Environment: Linux x86_64, Python 3.11.13, FastAPI 0.142.2, Uvicorn 0.54.0, httpx 0.28.1. No unit tests added; standalone integration/fault probes used automated assertions.
+- Native media close exceptions, GPU inference, full calls, and a multi-session shutdown failure were not dynamically exercised. In particular, the four-file patch has not had every exception path tested. Source review of `Session.close()` and `LiveKitSink.close()` is not presented as runtime media acceptance.

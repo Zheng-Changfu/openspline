@@ -1,0 +1,77 @@
+{
+  "repository": "https://github.com/openspline/openspline",
+  "exact_base": "1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9",
+  "upstream_head_check": {
+    "command": "git ls-remote https://github.com/openspline/openspline.git HEAD",
+    "date": "2026-10-30",
+    "matches_base": true
+  },
+  "diff": {
+    "file": "minimal-lifecycle.patch",
+    "files": 4,
+    "insertions": 51,
+    "deletions": 43,
+    "sha256": "d5449343a5ee2748886bdbc5abc0ff75874aefdbe8ed57f9873e3ee8b692e8bc"
+  },
+  "static_checks": [
+    {
+      "check": "git apply --check against the exact base",
+      "result": "passed",
+      "date": "2026-10-30"
+    },
+    {
+      "check": "python -m py_compile of all four proposed source files",
+      "result": "passed",
+      "date": "2026-10-30"
+    },
+    {
+      "check": "two independent source reviews",
+      "result": "no remaining blocking issue found",
+      "scope": "resource ownership, exception propagation, shutdown ordering"
+    }
+  ],
+  "review_resolution": "An earlier gather/finally shutdown approach was rejected because other removals might still be active after the first error. AsyncExitStack now completes each removal before pool.close; shutdown removal is sequential.",
+  "runtime_validation": {
+    "status": "passed within the recorded scope",
+    "scope": "Real subprocess, IPC, FastAPI HTTP, release, directory cleanup, and reaper continuation; official test inference engine.",
+    "environment": {
+      "os": "Linux x86_64",
+      "python": "3.11.13",
+      "fastapi": "0.142.2",
+      "uvicorn": "0.54.0",
+      "httpx": "0.28.1",
+      "backend": "test"
+    },
+    "fault": "SIGSTOP real worker subprocess, wait for stopped state, then close its real parent multiprocessing connection. Reset raises OSError: handle is closed.",
+    "comparison": [
+      {
+        "path": "HTTP DELETE",
+        "base": "500; owner and directory retained; reaper alive but worker excluded from idle recovery; next create 429",
+        "proposal": "500; owner and directory removed; reaper restores ready; next create/delete 201/204"
+      },
+      {
+        "path": "idle expiry",
+        "base": "reaper exits with OSError; owner and directory retained; next create 429; lifespan reports the reaper failure",
+        "proposal": "reaper logs the failed removal and continues; owner and directory removed; ready restored; next create 201 and subsequent expiry status 404"
+      }
+    ],
+    "cleanup": "All four standalone runs verified zero remaining worker child processes and removal of their own temporary runtime directories.",
+    "automated_assertions": true,
+    "mocked_cleanup_methods": false
+  },
+  "limits": [
+    "No GPU inference or full-call acceptance of this exact patch.",
+    "No native media cleanup-failure acceptance of this exact patch.",
+    "Session.close and LiveKitSink.close exception paths were source-reviewed, not dynamically exercised by the IPC probe.",
+    "No multi-session shutdown failure acceptance.",
+    "No attach/close concurrency, repeated cancellation, waiting-lease policy, or tail-playout acceptance.",
+    "Historical behavior from other downstream revisions is not evidence for this patch.",
+    "No unit tests added; standalone integration/fault probes may use automated assertions."
+  ],
+  "publication": {
+    "published": false,
+    "remote_fork_created": false,
+    "production_integrated": false
+  },
+  "privacy": "No application source, portraits, recordings, credentials, or call logs are included."
+}

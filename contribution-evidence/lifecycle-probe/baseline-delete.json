@@ -1,0 +1,38 @@
+{
+  "variant": "baseline",
+  "mode": "delete",
+  "base_sha": "1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9",
+  "backend": "test",
+  "real_process_ipc_http": true,
+  "gpu_and_media_playback_verified": false,
+  "fault": "SIGSTOP real worker, close real parent Connection, then reset sends on closed IPC",
+  "delete_status": 500,
+  "after_failed_release": {
+    "sessions": 0,
+    "owner_retained": true,
+    "worker_ready": false,
+    "session_directory_exists": true,
+    "reaper_running": true,
+    "reaper_error": null
+  },
+  "after_recovery_cycle": {
+    "sessions": 0,
+    "owner_retained": true,
+    "worker_ready": false,
+    "session_directory_exists": true,
+    "reaper_running": true,
+    "reaper_error": null
+  },
+  "second_create_status": 429,
+  "before_harness_cleanup": {
+    "sessions": 0,
+    "owner_retained": true,
+    "worker_ready": false,
+    "session_directory_exists": true,
+    "reaper_running": true,
+    "reaper_error": null
+  },
+  "remaining_worker_processes": 0,
+  "expected_comparison_passed": true,
+  "scratch_directory_removed": true
+}

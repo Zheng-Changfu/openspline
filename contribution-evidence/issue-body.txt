@@ -1,0 +1,36 @@
+# Cleanup errors can leave a removed session holding worker capacity and stop the session reaper
+
+At [`1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9`](https://github.com/openspline/openspline/tree/1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9), a failure during session cleanup can prevent later resources from being released. An isolated before/after comparison reproduced worker-ownership and reaper failures using real HTTP, real worker subprocesses, and a deliberately closed IPC connection. Media-resource failure paths below were reviewed in source but were not exercised dynamically.
+
+## Failure chain
+
+1. [`app.py:remove`](https://github.com/openspline/openspline/blob/1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9/packages/server/src/openspline_server/app.py#L50) removes the session from `sessions` before awaiting `Session.close()`. If close raises, `pool.release()` and session-directory cleanup are skipped. A subsequent DELETE cannot retry that session's release because the dictionary entry is already gone.
+2. [`WorkerPool.release`](https://github.com/openspline/openspline/blob/1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9/packages/server/src/openspline_server/worker.py#L509) clears `worker.owner` only after reset/restart returns. An exception other than the explicitly handled `WorkerFailure` can skip that assignment. The existing idle recovery loop requires `owner is None`, so this also prevents that worker from being considered for recovery.
+3. The reaper awaits `remove()` without an exception boundary. A failed removal ends the task and prevents later session-expiry passes.
+4. [`Session.close`](https://github.com/openspline/openspline/blob/1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9/packages/server/src/openspline_server/session.py#L297) and [`LiveKitSink.close`](https://github.com/openspline/openspline/blob/1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9/packages/server/src/openspline_server/livekit.py#L131) await cleanup operations sequentially without a resource stack. An earlier cleanup exception can skip later media resources and the LiveKit room disconnect.
+5. During application shutdown, `gather(remove(...))` can raise before `pool.close()` is reached. A repair that merely puts `pool.close()` in `finally` is also insufficient: ordinary `gather` may propagate the first exception while other removals are still using the pool.
+
+This does not mean every GPU failure follows this path. Ordinary `WorkerFailure` during reset is already handled, and most model-start failures are recorded by `Worker._start()` rather than raised. Similarly, ordinary inference exceptions are caught by `Session._consume()`. The problematic path requires an exception that escapes a cleanup operation.
+
+## Minimal manual reproduction
+
+Use an isolated checkout and runtime directory. Start the real FastAPI/Uvicorn server using the repository's built-in `test` engine and create a session with a synthetic image. Suspend its real worker subprocess with `SIGSTOP`, wait until it is stopped, and close the parent process's actual multiprocessing connection. Then delete the session through HTTP, or let it expire. This deliberately creates a real IPC failure; no method is replaced with a mock. Always resume and clean up the subprocess after the observation.
+
+In the executed comparison, reset raised `OSError("handle is closed")`, rather than `WorkerFailure`.
+
+| Path | Exact base | Proposed patch |
+|---|---|---|
+| HTTP DELETE | 500; owner and session directory retained; next create 429 | 500; owner and directory removed; existing reaper restores readiness; next create 201, delete 204 |
+| Idle expiry | Reaper exits with OSError; owner and directory retained; next create 429 | Reaper continues; owner and directory removed; worker becomes ready; next session creates with 201 and subsequently expires with status 404 |
+
+Environment: Linux x86_64, Python 3.11.13, FastAPI 0.142.2, Uvicorn 0.54.0, httpx 0.28.1. All four runs used real subprocesses and HTTP, with the official `backend="test"` inference engine. The harness cleaned all remaining worker processes and its temporary runtime directory. These results do not validate GPU inference, LiveKit media cleanup, or a full application call. Detailed executed steps and explicitly unexecuted media/shutdown cases are in `manual-reproduction.txt`.
+
+## Expected behavior
+
+- A removed session attempts all owned cleanup, including worker release and temporary-directory cleanup.
+- Worker ownership is relinquished even when reset or restart fails; worker readiness continues to reflect the existing worker logic.
+- Explicit HTTP cleanup failures remain failures rather than becoming silent success.
+- The background reaper logs a failed removal once and continues processing other sessions.
+- Application shutdown completes all session-removal attempts before closing the worker pool.
+
+The proposed patch uses `finally` and `AsyncExitStack`. It adds no retry policy, lock, timeout, SDK-private access, or protocol change. Concurrent attach/close, repeated cancellation, lease-expiry policy, and media playout completion remain outside this proposal.

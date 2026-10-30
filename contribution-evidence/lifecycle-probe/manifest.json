@@ -1,0 +1,48 @@
+{
+  "base_sha": "1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9",
+  "platform": "Linux x86_64",
+  "python": "3.11.13",
+  "dependencies": {
+    "fastapi": "0.142.2",
+    "uvicorn": "0.54.0",
+    "httpx": "0.28.1",
+    "numpy": "2.4.6",
+    "Pillow": "12.3.0",
+    "av": "16.1.0",
+    "livekit": "1.1.18",
+    "livekit-agents": "1.8.3"
+  },
+  "isolation": {
+    "containers": 4,
+    "network": "none, loopback HTTP only",
+    "cpu_limit": 2,
+    "memory_limit": "2g",
+    "gpu_exposed": false,
+    "production_services_stopped": false,
+    "remaining_probe_containers": 0
+  },
+  "patch_sha256": "d5449343a5ee2748886bdbc5abc0ff75874aefdbe8ed57f9873e3ee8b692e8bc",
+  "verified": [
+    "Real WorkerPool process and multiprocessing Connection reset failure",
+    "Real FastAPI HTTP DELETE returns 500 without suppressing failure",
+    "Owner and scratch session directory release",
+    "Reaper recovery and subsequent session expiry",
+    "Probe child processes and temporary directories cleaned"
+  ],
+  "not_verified": [
+    "GPU inference",
+    "Avatar native media or playout",
+    "Injected failure in Session.close media resources",
+    "Attach-close concurrency",
+    "Repeated cancellation"
+  ],
+  "public_material_contains_business_credentials": false,
+  "files": {
+    "probe.py": "d317b134b7083c5d3097123544f1a23afeb812d5daba1a67bcd68ddcdb3ff0e4",
+    "baseline-delete.json": "448c015edcad57db2d46097384aca46e5c9e43a9f8bb52bdf933e427c971177a",
+    "baseline-expiry.json": "cc064f5f346233bbec84ead9fcd88a40f474d8cfc88064794dc917d2b1c9f2e5",
+    "proposed-delete.json": "c4ad1c27f182ac7e3cf5294478929d7f3a5f16a5eb6ac32ce55ca1573d0c6bb2",
+    "proposed-expiry.json": "e9ccbe638a718ef429f3d6dbb1a00cbdc2e89920df5a29e9e2e5cd2209bf6e67",
+    "README.txt": "df445f75b0e6adcc6b30905a38c4592fe8603f4efe04dae286cea0b722c78642"
+  }
+}

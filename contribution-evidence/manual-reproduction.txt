@@ -1,0 +1,60 @@
+# Manual reproduction and acceptance plan
+
+Status: Section 1 was executed against both the exact base and proposal. Sections 2-4 are additional procedures that have not been executed for this proposal. No production service was stopped or modified.
+
+Use base `1e5f2b06e6c3dfc68e59ab9bfb3b30997d51caf9`, a disposable runtime directory, and upstream installation instructions. Repeat relevant steps with `minimal-lifecycle.patch` applied. Keep credentials and media local; use a maintainer-owned or synthetic portrait if a session is needed.
+
+## 1. Executed: real IPC failure through HTTP deletion and idle expiry
+
+This exercises the ownership/reaper bug without GPU requirements. The upstream built-in `test` engine was used with real FastAPI/Uvicorn HTTP, WorkerPool, subprocesses, and multiprocessing connections. This is not GPU recovery acceptance. Environment: Linux x86_64; Python 3.11.13; FastAPI 0.142.2; Uvicorn 0.54.0; httpx 0.28.1.
+
+1. Launch the real server with `Settings(backend="test", runtime_dir=<temporary directory>)`. Use a regular Python entry point with the multiprocessing spawn guard. Set `idle_timeout=3600` for the DELETE case and `idle_timeout=1` for the expiry case; keep the upstream reaper's five-second interval unchanged.
+2. Create a session over HTTP with multipart `POST /v1/sessions`, supplying a programmatically generated solid-color PNG. No playback destination is attached. Keep its returned publisher token in process memory only.
+3. From the local harness/debugger, obtain the session's real worker. Send `SIGSTOP` to that subprocess and wait until `/proc/<pid>/stat` reports the stopped state. Close the actual parent IPC endpoint with `worker.conn.close()`. Do not replace `call`, `reset`, `stop`, or `start` with a fake implementation.
+4. For DELETE, send authenticated `DELETE /v1/sessions/{id}`. For expiry, let the original reaper expire the session. Reset sends on the closed connection and raises `OSError("handle is closed")`. Record occupancy, readiness, the session-directory existence, and reaper task status.
+5. Resume the stopped subprocess with `SIGCONT`. Let the existing reaper run; do not manually clear `owner` or force readiness. On the base, wait past another reaper interval. On the proposal, wait for actual readiness with no owner.
+6. Attempt a second real HTTP create. The base returned 429 in both cases. The proposal returned 201; the DELETE run then returned 204 for closing it, and the expiry run allowed it to expire naturally and verified status 404.
+7. In a harness `finally`, resume any still-stopped subprocess, request Uvicorn shutdown, and always await the real pool's close even if baseline lifespan fails. Verify no worker child process remains and remove only the harness's own temporary runtime directory.
+
+Observed comparison:
+
+| Case | Immediate failure | Owner/directory after failure | Subsequent result |
+|---|---|---|---|
+| Base DELETE | HTTP 500 | Both retained | Reaper remains alive but cannot recover an owned worker; next create 429 |
+| Proposal DELETE | HTTP 500 | Both released/removed | Reaper restores ready; next create/delete 201/204 |
+| Base expiry | Reaper OSError | Both retained | Reaper stops; next create 429; lifespan reports the existing reaper failure |
+| Proposal expiry | One removal error logged | Both released/removed | Reaper continues/restores ready; next create 201, later expiry status 404 |
+
+All four runs completed the expected assertions and harness cleanup. This demonstrates the release/directory/reaper paths, not a native receiver failure or every exception branch in the four-file patch.
+
+Killing a GPU process and holding its device lock is not an equivalent deterministic reproduction: reset `WorkerFailure` is already caught, and common `_start()` failures are recorded without escaping. That experiment alone would not demonstrate this ownership fix.
+
+## 2. Pending: HTTP removal and media cleanup failure
+
+This requires a real server and, for native media, a separate disposable LiveKit room. Use the official session endpoints and a local debugger. A one-shot exception at a cleanup boundary is deliberate fault injection, not evidence of its natural occurrence rate.
+
+1. Start the server from the isolated checkout. Create a session with `POST /v1/sessions`, using multipart `portrait` and `quality=low`. Retain the returned publisher token locally.
+2. Attach a playback destination normally. For the native case, join a sender and use `POST /v1/sessions/{id}/livekit` with the isolated room's URL, token, and sender identity. Wait for attach to complete; this procedure does not exercise concurrent attach/close.
+3. Arrange a single cleanup failure inside the real receiver's `aclose()` operation using a debugger or a temporary throwaway source edit. Restore the edit immediately after this run; it is not part of the patch. Record which cleanup method actually raised.
+4. Send authenticated `DELETE /v1/sessions/{id}`. Inspect the HTTP result, `/readyz` worker occupancy, whether the native participant leaves the room, and whether that session's runtime directory remains.
+5. Base source-path expectation: the exception can skip subsequent native cleanup, `pool.release()`, and directory removal even though the session dictionary entry is already gone. A second DELETE is not evidence of release: it can return 204 simply because the entry is missing.
+6. Proposal expectation: later owned media resources and room disconnect are attempted, worker release and directory removal are attempted, and the original or subsequently chained cleanup failure still reaches the HTTP request. Actual resource success must be checked separately; an attempt is not a guarantee.
+
+To exercise `Session.close()` independently of native cleanup, repeat with a one-shot exception from an attached playback destination's real `close()` operation and, if configured, observe the remaining background resource. Ordinary inference failure is not sufficient: `_consume()` already handles its normal inference exceptions.
+
+## 3. Pending: reaper continuation after a media-close failure
+
+1. Configure two disposable workers and create two sessions, so a failed first removal cannot prevent the second session from being created.
+2. Arrange the same one-shot cleanup exception for the first session. Let it expire through configured `idle_timeout` or `session_ttl`; do not keep touching its status endpoint.
+3. Let the second session expire afterward. Observe both session removal and worker occupancy across multiple five-second reaper passes.
+4. Base source-path expectation: the first exception exits the reaper task. Proposal expectation: one logged failure for that removal and continued processing of the second session. Do not equate a successful HTTP health check with a live reaper.
+
+## 4. Pending: multi-session shutdown ordering under a close failure
+
+1. With two sessions active, arrange a one-shot close failure in one session and request normal server shutdown.
+2. Observe through debugger breakpoints that each session removal finishes or raises before `pool.close()` begins. Do not use a first-error `gather` return as proof that all removals have finished.
+3. Proposal expectation: all registered cleanup callbacks are attempted in LIFO order, pool shutdown runs last, and failures remain visible. Session removals are intentionally sequential during shutdown.
+
+## Validation boundaries
+
+These procedures do not cover concurrent attach/close, repeated task cancellation, attach timeout, session creation rollback, SDK-global handler cleanup, idle-wait policy, empty audio segments, or final audio/video playout completion. Separate evidence is needed for those behaviors before removing unrelated downstream changes.
